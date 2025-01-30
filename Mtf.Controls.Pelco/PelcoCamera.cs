@@ -14,7 +14,7 @@ namespace Mtf.Controls.Pelco
 {
     public class PelcoCamera
     {
-        public const string PelcoConfigurationUrm = "urn:schemas-pelco-com:service:PelcoConfiguration:1";
+        public const string PelcoConfigurationUrn = "urn:schemas-pelco-com:service:PelcoConfiguration:1";
         public const string MenuControlUrn = "urn:schemas-pelco-com:service:MenuControl:1";
 
         public string IpAddress { get; set; } = "192.168.0.20";
@@ -42,22 +42,22 @@ namespace Mtf.Controls.Pelco
 
         public string GetModel()
         {
-            return SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrm, "GetModelName", "modelName");
+            return SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrn, "GetModelName", "modelName");
         }
 
         public string GetLocation()
         {
-            return SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrm, "GetLocation", "location");
+            return SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrn, "GetLocation", "location");
         }
 
         public string GetConfiguration()
         {
-            return SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrm, "GetConfiguration", "pelcoConfig");
+            return SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrn, "GetConfiguration", "pelcoConfig");
         }
 
         public void Restart()
         {
-            _ = SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrm, "Restart", null,
+            _ = SoapClient.SendRequest(SoapUrl, PelcoConfigurationUrn, "Restart", null,
                 new SoapParameter
                 {
                     Name = "modelName",
@@ -117,47 +117,57 @@ namespace Mtf.Controls.Pelco
             return discoveredCameras;
         }
 
-        public async Task RebootAsync()
+        public async Task<bool> RebootAsync()
         {
-            using (var httpClient = new HttpClient())
+            var baseUri = new Uri($"http://{IpAddress}");
+            var cookieContainer = new CookieContainer();
+            var handler = new HttpClientHandler { CookieContainer = cookieContainer };
+
+            try
             {
-                var content = new FormUrlEncodedContent(new Dictionary<string, string>
+                using (var httpClient = new HttpClient(handler) { BaseAddress = baseUri })
                 {
-                    { "username", Username },
-                    { "password", Password }
-                });
-
-                var uri = new Uri($"http://{IpAddress}/auth/validate");
-
-                var response = await httpClient.PostAsync(uri, content);
-                var responseContent = await response.Content.ReadAsStringAsync();
-                if (response.StatusCode == HttpStatusCode.Found && !String.IsNullOrEmpty(responseContent))
-                {
-                    var sessionId = ExtractValue(response.Headers, "Set-Cookie", "PHPSESSID=", ";");
-                    var authosToken = ExtractValue(response.Headers, "Set-Cookie", "authos-token=", ";");
-
-                    if (!String.IsNullOrEmpty(sessionId) && !String.IsNullOrEmpty(authosToken))
-                    {
-                        uri = new Uri($"http://{IpAddress}/setup/system/general/");
-                        response = await httpClient.GetAsync(uri);
-
-                        var cookieContainer = new CookieContainer();
-                        using (var handler = new HttpClientHandler() { CookieContainer = cookieContainer })
-                        using (var client = new HttpClient(handler) { BaseAddress = uri })
+                    // Authenticate
+                    var authContent = new FormUrlEncodedContent(new Dictionary<string, string>
                         {
-                            cookieContainer.Add(uri, new Cookie("PHPSESSID", sessionId));
-                            cookieContainer.Add(uri, new Cookie("authos-token", authosToken));
-                            var result = await client.GetAsync("reboot");
-                            if (result.IsSuccessStatusCode)
-                            {
-                            }
+                            { "username", Username },
+                            { "password", Password }
+                        });
+
+                    var authResponse = await httpClient.PostAsync("auth/validate", authContent);
+                    if (authResponse.StatusCode != HttpStatusCode.Found)
+                    {
+                        Console.WriteLine("Authentication failed.");
+                        return false;
+                    }
+
+                    // Extract cookies
+                    if (authResponse.Headers.TryGetValues("Set-Cookie", out var cookieHeaders))
+                    {
+                        foreach (var cookieHeader in cookieHeaders)
+                        {
+                            cookieContainer.SetCookies(baseUri, cookieHeader);
                         }
                     }
+
+                    // Reboot
+                    var rebootResponse = await httpClient.GetAsync("setup/system/general/reboot");
+                    if (rebootResponse.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine("Reboot request succeeded.");
+                        return true;
+                    }
+                    else
+                    {
+                        Console.WriteLine("Reboot request failed.");
+                        return false;
+                    }
                 }
-                else
-                {
-                    Console.WriteLine("Unexpected response status or content during reboot request.");
-                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Reboot request failed: {ex.Message}");
+                throw;
             }
         }
 
